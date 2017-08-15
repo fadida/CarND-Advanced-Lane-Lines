@@ -18,207 +18,37 @@ LANE_WIDTH_PIXELS = 700
 
 class Line:
     """
-    This class handles line detection and tracking functionality
+    This class contains line info
     """
 
-    def __init__(self, detection_zone, n=1):
-        """
-        Initializes the line
-        :param detection_zone: A tuple marking the start and end of
-                                the region in the x axes.
-        """
-        self._detection_zone = detection_zone
-        # was the line detected in the last iteration?
-        self._detected = False
-        self._n = n
+    __slots__ = ['detected', 'recent_fitted_x', 'best_x', 'best_fit',
+                 'current_fit', 'radius_of_curvature', 'line_base_pos',
+                 'diffs', 'all_x', 'all_y']
+
+    def __init__(self):
+        # Was the line detected in the last iteration?
+        self.detected = False
         # x values of the last n fits of the line
-        self._recent_xfitted = []
-        # average x values of the fitted line over the last n iterations
-        self._bestx = None
-        # polynomial coefficients averaged over the last n iterations
-        self._best_fit = None
-        # polynomial coefficients for the most recent fit
-        self._current_fit = None
-        # radius of curvature of the line in some units
+        self.recent_fitted_x = []
+        # Average x values of the fitted line over the last n iterations
+        self.best_x = None
+        # Polynomial coefficients averaged over the last n iterations
+        self.best_fit = None
+        # Polynomial coefficients for the most recent fit
+        self.current_fit = [np.array([False])]
+        # Radius of curvature of the line in some units
         self.radius_of_curvature = None
-        # distance in meters of vehicle center from the line
+        # Distance in meters of vehicle center from the line
         self.line_base_pos = None
-        # difference in fit coefficients between last and new fits
-        self._diffs = np.array([0, 0, 0], dtype='float')
+        # Difference in fit coefficients between last and new fits
+        self.diffs = np.array([0,0,0], dtype='float')
         # x values for detected line pixels
-        self._allx = None
+        self.all_x = None
         # y values for detected line pixels
-        self._ally = None
-
-    def _find(self, binary, n_windows=9, recenter_thresh=50, win_margin=100):
-        """
-        Looks for a line in a binary image.
-        Scans the `detection_zone` in order to find
-        the line using the following steps:
-        * Calculate bottom half histogram in order
-          to find the initial searching point
-        * Use sliding windows in order to follow the
-          line from the initial point and collect the points
-          that make up the line along the way
-        * Use the collected points in order to interpolate
-          the line using numpy.polyfit with degree of 2.
-
-        :param binary: A binary image.
-        :param n_windows: The number of windows to use.
-        :param recenter_thresh: The minimum number of pixels that need
-                                to be found in order to justify recalculation
-                                of window center.
-        :param win_margin: The margin of the window in the x axes.
-        """
-        # Calculate the histogram of the bottom half of the image
-        histogram = np.sum(binary[binary.shape[0] // 2:, :], axis=0)
-        # Find the peak location
-        peak_loc = np.argmax(histogram)
-
-        # Use sliding windows in order to find the line
-        window_height = np.int(binary.shape[0] / n_windows)
-        # Identify the x and y positions of all nonzero pixels in the image
-        nonzero = binary.nonzero()
-        nonzero_y = np.array(nonzero[0])
-        nonzero_x = np.array(nonzero[1])
-        # Set current position to the peak location
-        curr_pos = peak_loc
-        # Create list for the line pixel indices
-        line_idx = []
-
-        for window in range(n_windows):
-            # Identify window boundaries in x and y
-            win_x_left = curr_pos - win_margin
-            win_x_right = curr_pos + win_margin
-            win_y_high = binary.shape[0] - window * window_height
-            win_y_low = win_y_high - window_height
-            # Identify the nonzero pixels in x and y within the window
-            nonzero_win_idx = ((nonzero_y >= win_y_low) &
-                               (nonzero_y <= win_y_high) &
-                               (nonzero_x >= win_x_left) &
-                               (nonzero_x <= win_x_right)).nonzero()[0]
-            line_idx.append(nonzero_win_idx)
-            # Recenter the window if needed
-            if len(nonzero_win_idx) > recenter_thresh:
-                # Recenter to the indices mean position
-                curr_pos = np.mean(nonzero_x[nonzero_win_idx], dtype=np.int)
-
-        line_idx = np.concatenate(line_idx)
-
-        line_x = nonzero_x[line_idx] + self._detection_zone[0]
-        line_y = nonzero_y[line_idx]
-
-        line_fit = np.polyfit(line_y, line_x, 2)
-        if self._current_fit is not None:
-            self._diffs = self._current_fit - line_fit
-        self._current_fit = line_fit
-
-        self._allx = line_x
-        self._ally = line_y
-
-        self._detected = True
-
-    def _track(self, binary, margin=100):
-        """
-
-        :param binary:
-        :return:
-        """
-        # If the line was not detected last frame then there is nothing to track
-        if not self._detected:
-            return False
-
-        nonzero = binary.nonzero()
-        nonzero_y = np.array(nonzero[0])
-        nonzero_x = np.array(nonzero[1]) + self._detection_zone[0]
-
-        fit_val_x = np.polyval(self.get_poly(), nonzero_y)
-        line_idx = ((nonzero_x > (fit_val_x - margin)) & (nonzero_x < (fit_val_x + margin)))
-
-        line_x = nonzero_x[line_idx]
-        line_y = nonzero_y[line_idx]
-
-        if line_x.size == 0:
-            self._detected = False
-            return False
-
-        line_fit = np.polyfit(line_y, line_x, 2)
-
-        self._diffs = self._current_fit - line_fit
-        self._current_fit = line_fit
-
-        self._allx = line_x
-        self._ally = line_y
-
-        return True
-
-    def detect(self, binary):
-        """
-        Detects a line in a binary, this method detects one
-        line only and searches for it only in the predefined
-        `detection_zone`.
-        This method will try tracking the line first when possible
-        and on failure will try finding it by scanning the `detection_zone`.
-        :param binary: A binary.
-        """
-        # Crop the binary to the `detection_zone`
-        left, right = self._detection_zone[0], self._detection_zone[1]
-        cropped_binary = binary[:, left:right]
-        if not self._track(cropped_binary):
-            self._find(cropped_binary)
-
-        self._update_properties()
-        self._update_curvature_and_pos(binary)
+        self.all_y = None
 
     def get_points(self):
-        """
-        Returns the x,y points of the detected line
-        """
-        return self._ally, self._allx
-
-    def get_poly(self):
-        """
-        Returns the polynomial coefficients of the line
-        """
-        return self._best_fit
-
-    def _update_curvature_and_pos(self, binary):
-        """
-        Updates curvature and position from center
-        """
-        # Calculate meter per pixel (mpp) in both axis
-        mpp_y = LANE_HEIGHT_METERS / binary.shape[0]
-        mpp_x = LANE_WIDTH_METERS / LANE_WIDTH_PIXELS
-
-        # Fit new polynomials to x,y in world space
-        line_y, line_x = self.get_points()
-        line_fit = np.polyfit(line_y * mpp_y, line_x * mpp_x, 2)
-
-        # Calculate curvature at the bottom of the image
-        first_der = [2*line_fit[0], line_fit[1]]
-        second_der = 2*line_fit[0]
-        y_eval = binary.shape[0] * mpp_y
-
-        numerator = (1 + np.polyval(first_der, y_eval)**2)**1.5
-        denominator = np.abs(second_der)
-        self.radius_of_curvature = numerator / denominator
-
-        # Calculate position
-        center_pos = (binary.shape[1] / 2) * mpp_x
-        lane_pos = np.polyval(line_fit, y_eval)
-        self.line_base_pos = np.abs(lane_pos - center_pos)
-
-    def _update_properties(self):
-        n_samples = len(self._recent_xfitted)
-        if n_samples == self._n:
-            self._recent_xfitted.pop(0)
-        else:
-            n_samples += 1
-
-        self._recent_xfitted.append(self._current_fit)
-
-        # self._bestx = np.sum(self._recent_x, axis=0) / n_samples
-        self._best_fit = np.sum(self._recent_xfitted, axis=0) / n_samples
+        return self.all_y, self.all_x
 
 
 class Camera:
@@ -234,8 +64,8 @@ class Camera:
 
         # Bird-eye wrap preparation
         # Source points(formatted like the actual rectangle)
-        src_points = np.float32([[577, 462], [704, 462],
-                                 [200, 720], [1082, 720]])
+        src_points = np.float32([[594, 450], [688, 450],
+                                 [200, 720], [1100, 720]])
         # Create the destination points array
         dst_points = np.float32([[300, 0], [1000, 0],
                                  [300, 720], [1000, 720]])
@@ -321,8 +151,7 @@ class Camera:
         l_channel = hls[:, :, 1]
         s_channel = hls[:, :, 2]
 
-        s_mask = self._create_bit_mask(s_channel, *s_thresh)
-
+        l_channel = cv2.equalizeHist(l_channel)
         # Take the derivative of the l channel in both x and y directions
         sobel_x = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)
         sobel_y = cv2.Sobel(l_channel, cv2.CV_64F, 0, 1)
@@ -333,11 +162,13 @@ class Camera:
         # Create bit mask
         sobel_mask = self._create_bit_mask(sobel_scaled, *sobel_thresh)
 
+        s_channel = cv2.equalizeHist(s_channel)
+        s_mask = self._create_bit_mask(s_channel, *s_thresh)
         # Combine both masks using bitwise or
         combined_mask = s_mask | sobel_mask
         return combined_mask
 
-    def get_lane_view(self, image, s_thresh=(130, 255), sobel_thresh=(90, 250)):
+    def get_lane_view(self, image, s_thresh=(240, 255), sobel_thresh=(30, 85)):
         """
         Takes an image and process it using the following steps:
         * Fix camera distortions
@@ -352,7 +183,7 @@ class Camera:
         undistorted = cv2.undistort(image, self._camera_mtx, self._camera_dist)
         edges = self._get_edges(undistorted, s_thresh, sobel_thresh)
         warped = cv2.warpPerspective(np.float32(edges), self._wrap_mat, edges.shape[::-1], flags=cv2.INTER_LINEAR)
-        return warped, undistorted
+        return warped, np.uint8(np.dstack((edges, edges, edges))*255) # undistorted
 
     def _draw_lane(self, image, lane_color,
                    left_line_color, left_line_points, left_line_poly_coeffs,
@@ -384,7 +215,6 @@ class Camera:
         pts = np.hstack((pts_left, pts_right))
         # Draw the lane onto the warped blank image
         cv2.fillPoly(warped_overlay, np.int_([pts]), lane_color)
-
         # Draw the lines on the overlay
         warped_overlay[left_line_points[0], left_line_points[1]] = left_line_color
         warped_overlay[right_line_points[0], right_line_points[1]] = right_line_color
@@ -392,7 +222,7 @@ class Camera:
         # Warp the overlay back to the image perspective
         overlay = cv2.warpPerspective(warped_overlay, self._wrap_mat_inv, (image.shape[1], image.shape[0]),
                                       flags=cv2.INTER_LINEAR)
-        result = cv2.addWeighted(image, 1, overlay, 0.3, 0)
+        result = cv2.addWeighted(image, 1, overlay, 0.6, 0)
         return result
 
     def _add_info(self, image, curvature, left_line_pos, right_line_pos):
@@ -435,8 +265,8 @@ class Camera:
         :return: An image with lane highlighted and lane data written on it
         """
         processed = self._draw_lane(image, (0, 255, 0),
-                                    (255, 0, 0), left_lane_line.get_points(), left_lane_line.get_poly(),
-                                    (0, 0, 255), right_lane_line.get_points(), right_lane_line.get_poly())
+                                    (255, 0, 0), left_lane_line.get_points(), left_lane_line.best_fit,
+                                    (0, 0, 255), right_lane_line.get_points(), right_lane_line.best_fit)
 
         curvature = np.min((left_line.radius_of_curvature, right_line.radius_of_curvature))
         processed = self._add_info(processed, curvature, left_line.line_base_pos, right_line.line_base_pos)
@@ -444,24 +274,307 @@ class Camera:
         return processed
 
 
-def process_image(image):
+def detect_lane(binary, lines, movie_mode=True, max_skip=0):
+    """
+    Detects a line in a binary, this method detects one
+    line only and searches for it only in the predefined
+    `detection_zone`.
+    This method will try tracking the line first when possible
+    and on failure will try finding it by scanning the `detection_zone`.
+    :param binary: A binary.
+    """
+
+    # ########### Helper methods ####################################
+    def validate_lane_lines(binary, lines, left_fit, right_fit, error_margin=150, fit_error=10):
+        """
+        Checks if the detected lines are valid.
+        :param lines: The lines tuple
+        :param error_margin:
+        :return: `True` if the lines are valid and `False` otherwise.
+        """
+        left_line, right_line = lines
+
+        # if np.any(np.abs(left_line.diffs) > fit_error) or np.any(np.abs(right_line.diffs) > fit_error):
+        #     print('Polynomial error')
+        #     return False
+
+        y_points = np.linspace(0, binary.shape[0] - 1, binary.shape[0])
+        x_left = np.polyval(left_fit, y_points)
+        x_right = np.polyval(right_fit, y_points)
+
+        # Check lines distance and that they don't meet
+        distances = x_right - x_left
+        if any(distances <= 0):
+            print('validation failed, error: Crossing lines')
+            return False
+        normed_distances = np.abs(distances - np.mean(distances))
+        if any(normed_distances >= error_margin):
+            print('validation failed, error: {} is above error margin'.format(np.max(normed_distances)))
+            return False
+
+        return True
+
+    def find_lane(binary, lines, n_windows=9, recenter_thresh=50, win_margin=100):
+        """
+        Looks for a line in a binary image.
+        Scans the `detection_zone` in order to find
+        the line using the following steps:
+        * Calculate bottom half histogram in order
+          to find the initial searching point
+        * Use sliding windows in order to follow the
+          line from the initial point and collect the points
+          that make up the line along the way
+        * Use the collected points in order to interpolate
+          the line using numpy.polyfit with degree of 2.
+
+        :param binary: A binary image.
+        :param n_windows: The number of windows to use.
+        :param recenter_thresh: The minimum number of pixels that need
+                                to be found in order to justify recalculation
+                                of window center.
+        :param win_margin: The margin of the window in the x axes.
+        """
+        # Extract the lane lines
+        left_line, right_line = lines
+
+        midpoint = binary.shape[1]//2
+        # Calculate the histogram of the bottom half of the image
+        histogram = np.sum(binary[binary.shape[0] // 2:, :], axis=0)
+        # Find the peak location
+        curr_pos_left = np.argmax(histogram[:midpoint])
+        curr_pos_right = np.argmax(histogram[midpoint:]) + midpoint
+        # Use sliding windows in order to find the line
+        window_height = np.int(binary.shape[0] / n_windows)
+        # Identify the x and y positions of all nonzero pixels in the image
+        nonzero = binary.nonzero()
+        nonzero_y = np.array(nonzero[0])
+        nonzero_x = np.array(nonzero[1])
+        # Create list for the line pixel indices
+        left_line_idx = []
+        right_line_idx = []
+
+        for window in range(n_windows):
+            # Identify window boundaries in x and y
+            win_y_high = binary.shape[0] - window * window_height
+            win_y_low = win_y_high - window_height
+            win_x_left_low = curr_pos_left - win_margin
+            win_x_left_high = curr_pos_left + win_margin
+            win_x_right_low = curr_pos_right - win_margin
+            win_x_right_high = curr_pos_right + win_margin
+            # Identify the nonzero pixels in x and y within the window
+            nonzero_win_left_idx = ((nonzero_y >= win_y_low) &
+                                    (nonzero_y <= win_y_high) &
+                                    (nonzero_x >= win_x_left_low) &
+                                    (nonzero_x <= win_x_left_high)).nonzero()[0]
+            nonzero_win_right_idx = ((nonzero_y >= win_y_low) &
+                                     (nonzero_y <= win_y_high) &
+                                     (nonzero_x >= win_x_right_low) &
+                                     (nonzero_x <= win_x_right_high)).nonzero()[0]
+            # Add points indices to their corresponding list
+            left_line_idx.append(nonzero_win_left_idx)
+            right_line_idx.append(nonzero_win_right_idx)
+            # Recenter the window if needed
+            if len(nonzero_win_left_idx) > recenter_thresh:
+                # Recenter to the indices mean position
+                curr_pos_left = np.mean(nonzero_x[nonzero_win_left_idx], dtype=np.int)
+            if len(nonzero_win_right_idx) > recenter_thresh:
+                # Recenter to the indices mean position
+                curr_pos_right = np.mean(nonzero_x[nonzero_win_right_idx], dtype=np.int)
+
+        left_line_idx = np.concatenate(left_line_idx)
+        right_line_idx = np.concatenate(right_line_idx)
+
+        # If we didn't find both of the lines then the detection failed.
+        if not any(left_line_idx) or not any(right_line_idx):
+            left_line.detected = right_line.detected = False
+            return
+
+        left_line_x = nonzero_x[left_line_idx]
+        left_line_y = nonzero_y[left_line_idx]
+        left_line_fit = np.polyfit(left_line_y, left_line_x, 2)
+
+        right_line_x = nonzero_x[right_line_idx]
+        right_line_y = nonzero_y[right_line_idx]
+        right_line_fit = np.polyfit(right_line_y, right_line_x, 2)
+
+        if not validate_lane_lines(binary, lines, left_line_fit, right_line_fit):
+            return
+
+        if left_line.current_fit is not None:
+            left_line.diffs = left_line.current_fit - left_line_fit
+            right_line.diffs = right_line.current_fit - right_line_fit
+
+        left_line.current_fit = left_line_fit
+        right_line.current_fit = right_line_fit
+
+        left_line.all_x, left_line.all_y = left_line_x, left_line_y
+        right_line.all_x, right_line.all_y = right_line_x, right_line_y
+
+        left_line.detected = right_line.detected = True
+
+    def track_lane(binary, lines, margin=20):
+        """
+
+        :param binary:
+        :return:
+        """
+        # Extract lane lines
+        left_line, right_line = lines
+        # If the line was not detected last frame then there is nothing to track
+        if (not left_line.detected) or (not left_line.detected):
+            return False
+
+        nonzero = binary.nonzero()
+        nonzero_y = np.array(nonzero[0])
+        nonzero_x = np.array(nonzero[1])
+
+        left_fit_val_x = np.polyval(left_line.current_fit, nonzero_y)
+        right_fit_val_x = np.polyval(right_line.current_fit, nonzero_y)
+
+        left_line_idx = ((nonzero_x > (left_fit_val_x - margin)) & (nonzero_x < (left_fit_val_x + margin)))
+        right_line_idx = ((nonzero_x > (right_fit_val_x - margin)) & (nonzero_x < (right_fit_val_x + margin)))
+
+        # If we didn't find both of the lines then the detection failed.
+        if not any(left_line_idx) or not any(right_line_idx):
+            left_line.detected = right_line.detected = False
+            return False
+
+        left_line_x = nonzero_x[left_line_idx]
+        left_line_y = nonzero_y[left_line_idx]
+        left_line_fit = np.polyfit(left_line_y, left_line_x, 2)
+
+        right_line_x = nonzero_x[right_line_idx]
+        right_line_y = nonzero_y[right_line_idx]
+        right_line_fit = np.polyfit(right_line_y, right_line_x, 2)
+
+        if not validate_lane_lines(binary, lines, left_line_fit, right_line_fit):
+            return False
+
+        left_line.diffs = left_line.current_fit - left_line_fit
+        right_line.diffs = right_line.current_fit - right_line_fit
+
+        left_line.current_fit = left_line_fit
+        right_line.current_fit = right_line_fit
+
+        left_line.all_x, left_line.all_y = left_line_x, left_line_y
+        right_line.all_x, right_line.all_y = right_line_x, right_line_y
+
+        return True
+
+    # ###############################################################
+
+    # Crop the binary to the `detection_zone`
+    left_line, right_line = lines
+    global skip_count
+
+    if not movie_mode or not track_lane(binary, lines):
+        if movie_mode and left_line.best_fit is not None and skip_count < max_skip:
+            skip_count += 1
+        else:
+            skip_count = 0
+            find_lane(binary, lines)
+            if not left_line.detected:
+                print('Not detected')
+
+
+def average_lines(binary, lines, avg_size):
+    left_line, right_line = lines
+
+    y_points = np.linspace(0, binary.shape[0] - 1, binary.shape[0])
+    x_left = np.polyval(left_line.current_fit, y_points)
+    x_right = np.polyval(right_line.current_fit, y_points)
+
+    left_line.recent_fitted_x.append(x_left)
+    right_line.recent_fitted_x.append(x_right)
+
+    if len(left_line.recent_fitted_x) > avg_size:
+        left_line.recent_fitted_x.pop(0)
+        right_line.recent_fitted_x.pop(0)
+
+    left_line.best_x = np.average(left_line.recent_fitted_x, axis=0)
+    right_line.best_x = np.average(right_line.recent_fitted_x, axis=0)
+
+    left_line.best_fit = np.polyfit(y_points, left_line.best_x, 2)
+    right_line.best_fit = np.polyfit(y_points, right_line.best_x, 2)
+
+
+def update_curvature_and_pos(binary, lines):
+    """
+    Updates curvature and position from center
+    """
+    # Extract lane lines
+    left_line, right_line = lines
+    # Calculate meter per pixel (mpp) in both axis
+    mpp_y = LANE_HEIGHT_METERS / binary.shape[0]
+    mpp_x = LANE_WIDTH_METERS / LANE_WIDTH_PIXELS
+
+    y_eval = binary.shape[0] * mpp_y
+
+    # Fit new polynomials to x,y in world space
+    left_line_y, left_line_x = left_line.all_y, left_line.all_x
+    left_line_fit = np.polyfit(left_line_y * mpp_y, left_line_x * mpp_x, 2)
+
+    right_line_y, right_line_x = right_line.all_y, right_line.all_x
+    right_line_fit = np.polyfit(right_line_y * mpp_y, right_line_x * mpp_x, 2)
+
+    # Calculate curvature at the bottom of the image
+    # For left line
+    first_der = [2*left_line_fit[0], left_line_fit[1]]
+    second_der = 2*left_line_fit[0]
+
+    numerator = (1 + np.polyval(first_der, y_eval)**2)**1.5
+    denominator = np.abs(second_der)
+    left_line.radius_of_curvature = numerator / denominator
+
+    # For right line
+    first_der = [2*right_line_fit[0], right_line_fit[1]]
+    second_der = 2*right_line_fit[0]
+
+    numerator = (1 + np.polyval(first_der, y_eval)**2)**1.5
+    denominator = np.abs(second_der)
+    right_line.radius_of_curvature = numerator / denominator
+
+    # Calculate position
+    center_pos = (binary.shape[1] / 2) * mpp_x
+    left_lane_pos = np.polyval(left_line_fit, y_eval)
+    right_lane_pos = np.polyval(right_line_fit, y_eval)
+
+    left_line.line_base_pos = np.abs(left_lane_pos - center_pos)
+    right_line.line_base_pos = np.abs(right_lane_pos - center_pos)
+
+
+def process_image(image, movie_mode=True):
     """
     Advanced lane line processor, assumes that
     :param image: input image
     :return: processed image
     """
     lanes, undist = camera.get_lane_view(image)
+    lines = (left_line, right_line)
 
-    left_line.detect(lanes)
-    right_line.detect(lanes)
-    # print(left_line.radius_of_curvature, right_line.radius_of_curvature)
+    detect_lane(lanes, lines, movie_mode=movie_mode)
+    if left_line.detected and right_line.detected:
+        if movie_mode:
+            average_lines(lanes, lines, avg_size=5)
+        else:
+            left_line.best_fit = left_line.current_fit
+            right_line.best_fit = right_line.current_fit
 
-    return camera.draw_on_image(undist, left_line, right_line)
+            print('-' * 20)
+            print(left_line.radius_of_curvature, right_line.radius_of_curvature)
+            print(left_line.current_fit, right_line.current_fit)
+        update_curvature_and_pos(lanes, lines)
+
+    if left_line.best_fit is not None:
+        return camera.draw_on_image(undist, left_line, right_line)
+
+    return undist
+
 
 if __name__ == '__main__':
     output_folder = 'output_images'
     input_path = 'test_images'
-    #input_path = 'project_video.mp4'
+    input_path = 'challenge_video.mp4'
 
     print("Starting lane detection pipeline. input={} output={}".format(input_path, output_folder))
 
@@ -469,9 +582,10 @@ if __name__ == '__main__':
     # Calibrate the camera
     camera.calibrate_camera('camera_cal', (9, 6))
 
+    skip_count = np.inf
     img_width = 1280
-    left_line = Line((0, img_width // 2))
-    right_line = Line((img_width // 2, img_width))
+    left_line = Line()
+    right_line = Line()
 
     print('Processing...')
     if os.path.isdir(input_path):
@@ -489,15 +603,12 @@ if __name__ == '__main__':
         suffix = file.split('.')[1]
         if suffix == 'jpg':
             # Image processing pipeline
-            left_line._detected = False
-            right_line._detected = False
             img = mpimg.imread(file_path)
-            dst = process_image(img)
+            dst = process_image(img, movie_mode=False)
+            print(file)
             mpimg.imsave(os.path.join(output_folder, file), dst)
         elif suffix == 'mp4':
-            left_line._n = 5
-            right_line._n = 5
-            clip = VideoFileClip(file_path)
+            clip = VideoFileClip(file_path).subclip(0, 2)
             dst = clip.fl_image(process_image)
             dst.write_videofile(os.path.join(output_folder, file), audio=False)
 

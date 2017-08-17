@@ -29,10 +29,8 @@ class Line:
     def __init__(self):
         # Was the line detected in the last iteration?
         self.detected = False
-        # x values of the last n fits of the line
-        self.recent_fitted_x = []
         # Average x values of the fitted line over the last n iterations
-        self.best_x = None
+        self.best_x = 0
         # Polynomial coefficients averaged over the last n iterations
         self.best_fit = None
         # Polynomial coefficients for the most recent fit
@@ -42,7 +40,7 @@ class Line:
         # Distance in meters of vehicle center from the line
         self.line_base_pos = None
         # Difference in fit coefficients between last and new fits
-        self.diffs = np.array([0,0,0], dtype='float')
+        self.diffs = np.array([0, 0, 0], dtype='float')
         # x values for detected line pixels
         self.all_x = None
         # y values for detected line pixels
@@ -486,12 +484,13 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
             find_lane(binary, lines)
 
 
-def average_lines(binary, lines, avg_size):
+def average_lines(binary, lines, alpha=0.8):
     """
-    Calculate the best fit of the lines via averaging the fitted_x points.
-    :param binary:
-    :param lines:
-    :param avg_size:
+    Calculate the best fit of the lines via averaging the fitted_x points via
+    weighted mean, by the following formula, best_x=(1-alpha)*best_x + alpha*current_fit_x
+    :param binary: The binary
+    :param lines: A tuple with both left & right lane lines
+    :param alpha: The alpha number of the weighted mean
     :return:
     """
     left_line, right_line = lines
@@ -501,16 +500,12 @@ def average_lines(binary, lines, avg_size):
     x_left = np.polyval(left_line.current_fit, y_points)
     x_right = np.polyval(right_line.current_fit, y_points)
 
-    # Add the lines to the recent list in order to average them.
-    left_line.recent_fitted_x.append(x_left)
-    right_line.recent_fitted_x.append(x_right)
-    if len(left_line.recent_fitted_x) > avg_size:
-        left_line.recent_fitted_x.pop(0)
-        right_line.recent_fitted_x.pop(0)
+    # # Calculate the best x
+    # left_line.best_x = np.average(left_line.recent_fitted_x, axis=0)
+    # right_line.best_x = np.average(right_line.recent_fitted_x, axis=0)
 
-    # Calculate the best x
-    left_line.best_x = np.average(left_line.recent_fitted_x, axis=0)
-    right_line.best_x = np.average(right_line.recent_fitted_x, axis=0)
+    left_line.best_x = left_line.best_x*(1-alpha) + x_left*alpha
+    right_line.best_x = right_line.best_x*(1-alpha) + x_right*alpha
 
     # Calculate the best fit
     left_line.best_fit = np.polyfit(y_points, left_line.best_x, 2)
@@ -569,7 +564,7 @@ def process_image(image, movie_mode=True):
                        * lane tracking (use previous fit to find the current fit).
                        * skip detection when tracking fails (use the same fit as the last one
                          for `max_skip` number of times).
-                       * calculate the best fit by averaging `avg_size` last samples.
+                       * calculate the best fit by weighted average.
     :param image: input image
     :return: processed image
     """
@@ -580,7 +575,7 @@ def process_image(image, movie_mode=True):
 
     if left_line.detected and right_line.detected:
         if movie_mode:
-            average_lines(lanes, lines, avg_size=3)
+            average_lines(lanes, lines)
         else:
             left_line.best_fit = left_line.current_fit
             right_line.best_fit = right_line.current_fit
@@ -596,8 +591,8 @@ def process_image(image, movie_mode=True):
 
 if __name__ == '__main__':
     output_folder = 'output_images'
-    # input_path = 'test_images'
-    input_path = 'project_video.mp4'
+    input_path = 'test_images'
+    # input_path = 'project_video.mp4'
 
     print("Starting lane detection pipeline. input={} output={}".format(input_path, output_folder))
 
@@ -637,7 +632,7 @@ if __name__ == '__main__':
             mpimg.imsave(os.path.join(output_folder, file), dst)
         elif suffix == 'mp4':
             # Video processing pipeline
-            clip = VideoFileClip(file_path)
+            clip = VideoFileClip(file_path).subclip(0,7)
             dst = clip.fl_image(process_image)
             dst.write_videofile(os.path.join(output_folder, file), audio=False)
 

@@ -9,6 +9,7 @@ import matplotlib.image as mpimg
 from moviepy.editor import VideoFileClip
 from tqdm import tqdm
 
+# ###### Constants ############
 LANE_HEIGHT_METERS = 30
 LANE_WIDTH_METERS = 3.7
 
@@ -48,6 +49,9 @@ class Line:
         self.all_y = None
 
     def get_points(self):
+        """
+        Returns a Tuple with `all_y` and `all_x`
+        """
         return self.all_y, self.all_x
 
 
@@ -168,7 +172,7 @@ class Camera:
         combined_mask = s_mask | sobel_mask
         return combined_mask
 
-    def get_lane_view(self, image, s_thresh=(240, 255), sobel_thresh=(30, 85)):
+    def get_lane_view(self, image, s_thresh=(240, 255), sobel_thresh=(30, 70)):
         """
         Takes an image and process it using the following steps:
         * Fix camera distortions
@@ -183,7 +187,7 @@ class Camera:
         undistorted = cv2.undistort(image, self._camera_mtx, self._camera_dist)
         edges = self._get_edges(undistorted, s_thresh, sobel_thresh)
         warped = cv2.warpPerspective(np.float32(edges), self._wrap_mat, edges.shape[::-1], flags=cv2.INTER_LINEAR)
-        return warped, np.uint8(np.dstack((edges, edges, edges))*255) # undistorted
+        return warped, undistorted
 
     def _draw_lane(self, image, lane_color,
                    left_line_color, left_line_points, left_line_poly_coeffs,
@@ -281,23 +285,25 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
     `detection_zone`.
     This method will try tracking the line first when possible
     and on failure will try finding it by scanning the `detection_zone`.
+    :param max_skip: The maximum number of frames the algorithm will avoid
+                     finding the line if tracking is failed
+    :param movie_mode: If this flag is `True` line tracking and skipping will
+                       be enabled.
+    :param lines: A tuple with both the lane lines
     :param binary: A binary.
     """
 
     # ########### Helper methods ####################################
-    def validate_lane_lines(binary, lines, left_fit, right_fit, error_margin=150, fit_error=10):
+    def validate_lane_lines(binary, left_fit, right_fit, error_margin=200):
         """
         Checks if the detected lines are valid.
-        :param lines: The lines tuple
-        :param error_margin:
+        :param right_fit: The polynomial coefficients of the right line
+        :param left_fit: The polynomial coefficients of the left line
+        :param binary: A binary
+        :param error_margin: The margin of error of the mean distance
+                             between the lines
         :return: `True` if the lines are valid and `False` otherwise.
         """
-        left_line, right_line = lines
-
-        # if np.any(np.abs(left_line.diffs) > fit_error) or np.any(np.abs(right_line.diffs) > fit_error):
-        #     print('Polynomial error')
-        #     return False
-
         y_points = np.linspace(0, binary.shape[0] - 1, binary.shape[0])
         x_left = np.polyval(left_fit, y_points)
         x_right = np.polyval(right_fit, y_points)
@@ -314,7 +320,7 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
 
         return True
 
-    def find_lane(binary, lines, n_windows=9, recenter_thresh=50, win_margin=100):
+    def find_lane(binary, lines, n_windows=19, recenter_thresh=50, win_margin=100):
         """
         Looks for a line in a binary image.
         Scans the `detection_zone` in order to find
@@ -327,6 +333,7 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
         * Use the collected points in order to interpolate
           the line using numpy.polyfit with degree of 2.
 
+        :param lines: A tuple containing the lane lines
         :param binary: A binary image.
         :param n_windows: The number of windows to use.
         :param recenter_thresh: The minimum number of pixels that need
@@ -397,7 +404,7 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
         right_line_y = nonzero_y[right_line_idx]
         right_line_fit = np.polyfit(right_line_y, right_line_x, 2)
 
-        if not validate_lane_lines(binary, lines, left_line_fit, right_line_fit):
+        if not validate_lane_lines(binary, left_line_fit, right_line_fit):
             return
 
         if left_line.current_fit is not None:
@@ -414,9 +421,11 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
 
     def track_lane(binary, lines, margin=20):
         """
-
-        :param binary:
-        :return:
+        Tracks the lines based on latest fit found
+        :param margin: The margin in which to track the lines in.
+        :param lines: A tuple containing the lane lines
+        :param binary: A binary
+        :return: `True` if the lines were found, and `False` otherwise.
         """
         # Extract lane lines
         left_line, right_line = lines
@@ -447,7 +456,7 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
         right_line_y = nonzero_y[right_line_idx]
         right_line_fit = np.polyfit(right_line_y, right_line_x, 2)
 
-        if not validate_lane_lines(binary, lines, left_line_fit, right_line_fit):
+        if not validate_lane_lines(binary, left_line_fit, right_line_fit):
             return False
 
         left_line.diffs = left_line.current_fit - left_line_fit
@@ -467,33 +476,43 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
     left_line, right_line = lines
     global skip_count
 
+    # Try to track the lanes first (only in movie mode) and if tracking fails,
+    # decide if to use previous fit info or to find the lane again.
     if not movie_mode or not track_lane(binary, lines):
         if movie_mode and left_line.best_fit is not None and skip_count < max_skip:
             skip_count += 1
         else:
             skip_count = 0
             find_lane(binary, lines)
-            if not left_line.detected:
-                print('Not detected')
 
 
 def average_lines(binary, lines, avg_size):
+    """
+    Calculate the best fit of the lines via averaging the fitted_x points.
+    :param binary:
+    :param lines:
+    :param avg_size:
+    :return:
+    """
     left_line, right_line = lines
 
+    # Calculate the x point for each of the lines
     y_points = np.linspace(0, binary.shape[0] - 1, binary.shape[0])
     x_left = np.polyval(left_line.current_fit, y_points)
     x_right = np.polyval(right_line.current_fit, y_points)
 
+    # Add the lines to the recent list in order to average them.
     left_line.recent_fitted_x.append(x_left)
     right_line.recent_fitted_x.append(x_right)
-
     if len(left_line.recent_fitted_x) > avg_size:
         left_line.recent_fitted_x.pop(0)
         right_line.recent_fitted_x.pop(0)
 
+    # Calculate the best x
     left_line.best_x = np.average(left_line.recent_fitted_x, axis=0)
     right_line.best_x = np.average(right_line.recent_fitted_x, axis=0)
 
+    # Calculate the best fit
     left_line.best_fit = np.polyfit(y_points, left_line.best_x, 2)
     right_line.best_fit = np.polyfit(y_points, right_line.best_x, 2)
 
@@ -546,25 +565,29 @@ def update_curvature_and_pos(binary, lines):
 def process_image(image, movie_mode=True):
     """
     Advanced lane line processor, assumes that
+    :param movie_mode: Enables/Disables the following:
+                       * lane tracking (use previous fit to find the current fit).
+                       * skip detection when tracking fails (use the same fit as the last one
+                         for `max_skip` number of times).
+                       * calculate the best fit by averaging `avg_size` last samples.
     :param image: input image
     :return: processed image
     """
     lanes, undist = camera.get_lane_view(image)
     lines = (left_line, right_line)
 
-    detect_lane(lanes, lines, movie_mode=movie_mode)
+    detect_lane(lanes, lines, movie_mode=movie_mode, max_skip=4)
+
     if left_line.detected and right_line.detected:
         if movie_mode:
-            average_lines(lanes, lines, avg_size=5)
+            average_lines(lanes, lines, avg_size=3)
         else:
             left_line.best_fit = left_line.current_fit
             right_line.best_fit = right_line.current_fit
 
-            print('-' * 20)
-            print(left_line.radius_of_curvature, right_line.radius_of_curvature)
-            print(left_line.current_fit, right_line.current_fit)
         update_curvature_and_pos(lanes, lines)
 
+    # If there is no fit to use - leave the image as is.
     if left_line.best_fit is not None:
         return camera.draw_on_image(undist, left_line, right_line)
 
@@ -573,8 +596,8 @@ def process_image(image, movie_mode=True):
 
 if __name__ == '__main__':
     output_folder = 'output_images'
-    input_path = 'test_images'
-    input_path = 'challenge_video.mp4'
+    # input_path = 'test_images'
+    input_path = 'project_video.mp4'
 
     print("Starting lane detection pipeline. input={} output={}".format(input_path, output_folder))
 
@@ -582,16 +605,20 @@ if __name__ == '__main__':
     # Calibrate the camera
     camera.calibrate_camera('camera_cal', (9, 6))
 
-    skip_count = np.inf
-    img_width = 1280
+    # Global parameters
     left_line = Line()
     right_line = Line()
+    # set `skip_count` to np.inf to make sure that on movie mode
+    # the first frame won't be skipped.
+    skip_count = np.inf
 
     print('Processing...')
+    # Create files list
     if os.path.isdir(input_path):
         files = os.listdir(input_path)
     else:
         files = [input_path]
+
     for file in files:
         if os.path.isdir(input_path):
             file_path = os.path.join(input_path, file)
@@ -600,6 +627,7 @@ if __name__ == '__main__':
 
         if not os.path.isfile(file_path):
             continue
+
         suffix = file.split('.')[1]
         if suffix == 'jpg':
             # Image processing pipeline
@@ -608,7 +636,8 @@ if __name__ == '__main__':
             print(file)
             mpimg.imsave(os.path.join(output_folder, file), dst)
         elif suffix == 'mp4':
-            clip = VideoFileClip(file_path).subclip(0, 2)
+            # Video processing pipeline
+            clip = VideoFileClip(file_path)
             dst = clip.fl_image(process_image)
             dst.write_videofile(os.path.join(output_folder, file), audio=False)
 

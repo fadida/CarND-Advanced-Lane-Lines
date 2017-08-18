@@ -505,10 +505,6 @@ def average_lines(binary, lines, alpha=0.8):
     x_left = np.polyval(left_line.current_fit, y_points)
     x_right = np.polyval(right_line.current_fit, y_points)
 
-    # # Calculate the best x
-    # left_line.best_x = np.average(left_line.recent_fitted_x, axis=0)
-    # right_line.best_x = np.average(right_line.recent_fitted_x, axis=0)
-
     left_line.best_x = left_line.best_x*(1-alpha) + x_left*alpha
     right_line.best_x = right_line.best_x*(1-alpha) + x_right*alpha
 

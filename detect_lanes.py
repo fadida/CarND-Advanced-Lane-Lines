@@ -172,7 +172,7 @@ class Camera:
         combined_mask = s_mask | sobel_mask | r_mask
         return combined_mask
 
-    def get_lane_view(self, image, s_thresh=(110, 255), sobel_thresh=(35, 60), red_thresh=(220, 255)):
+    def get_lane_view(self, image, s_thresh=(110, 255), sobel_thresh=(60, 120), red_thresh=(230, 254)):
         """
         Takes an image and process it using the following steps:
         * Fix camera distortions

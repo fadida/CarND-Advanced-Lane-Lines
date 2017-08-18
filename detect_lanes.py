@@ -132,7 +132,7 @@ class Camera:
         bit_mask[(low_tresh <= src) & (src <= high_tresh)] = 1
         return bit_mask
 
-    def _get_edges(self, image, s_thresh, sobel_thresh):
+    def _get_edges(self, image, s_thresh, sobel_thresh, red_thresh):
         """
         Detects lane edges in an image via converting
         the image to HLS.
@@ -149,11 +149,14 @@ class Camera:
                  contains only the edges of the `images`
         """
 
+        r_channel = image[:, :, 0]
+        r_mask = self._create_bit_mask(r_channel, *red_thresh)
+
         hls = cv2.cvtColor(image, cv2.COLOR_RGB2HLS)
         l_channel = hls[:, :, 1]
         s_channel = hls[:, :, 2]
 
-        l_channel = cv2.equalizeHist(l_channel)
+#        l_channel = cv2.equalizeHist(l_channel)
         # Take the derivative of the l channel in both x and y directions
         sobel_x = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)
         sobel_y = cv2.Sobel(l_channel, cv2.CV_64F, 0, 1)
@@ -164,26 +167,26 @@ class Camera:
         # Create bit mask
         sobel_mask = self._create_bit_mask(sobel_scaled, *sobel_thresh)
 
-        s_channel = cv2.equalizeHist(s_channel)
         s_mask = self._create_bit_mask(s_channel, *s_thresh)
         # Combine both masks using bitwise or
-        combined_mask = s_mask | sobel_mask
+        combined_mask = s_mask | sobel_mask | r_mask
         return combined_mask
 
-    def get_lane_view(self, image, s_thresh=(240, 255), sobel_thresh=(30, 70)):
+    def get_lane_view(self, image, s_thresh=(110, 255), sobel_thresh=(35, 60), red_thresh=(220, 255)):
         """
         Takes an image and process it using the following steps:
         * Fix camera distortions
         * Find edges in images
         * Warp to bird-eye view
         :param image: The image to be processed.
-        :param s_thresh: Lower & Upper S-Channel thresholds for edge detection.
+        :param s_thresh: Lower & Upper HLS S-Channel thresholds for edge detection.
         :param sobel_thresh: Lower & Upper Sobel derivative thresholds for edge detection.
+        :param red_thresh: Lower & Upper RGB R-Channel thresholds for edge detection
         :return: A binary that contains the image lanes in bird-eye view and the undistorted image.
         """
         assert self._camera_mtx is not None, 'Camera must be calibrated first!'
         undistorted = cv2.undistort(image, self._camera_mtx, self._camera_dist)
-        edges = self._get_edges(undistorted, s_thresh, sobel_thresh)
+        edges = self._get_edges(undistorted, s_thresh, sobel_thresh, red_thresh)
         warped = cv2.warpPerspective(np.float32(edges), self._wrap_mat, edges.shape[::-1], flags=cv2.INTER_LINEAR)
         return warped, undistorted
 
@@ -480,8 +483,10 @@ def detect_lane(binary, lines, movie_mode=True, max_skip=0):
         if movie_mode and left_line.best_fit is not None and skip_count < max_skip:
             skip_count += 1
         else:
-            skip_count = 0
             find_lane(binary, lines)
+
+    if left_line.detected:
+        skip_count = 0
 
 
 def average_lines(binary, lines, alpha=0.8):
@@ -592,7 +597,7 @@ def process_image(image, movie_mode=True):
 if __name__ == '__main__':
     output_folder = 'output_images'
     input_path = 'test_images'
-    # input_path = 'project_video.mp4'
+    input_path = 'project_video.mp4'
 
     print("Starting lane detection pipeline. input={} output={}".format(input_path, output_folder))
 
@@ -632,7 +637,7 @@ if __name__ == '__main__':
             mpimg.imsave(os.path.join(output_folder, file), dst)
         elif suffix == 'mp4':
             # Video processing pipeline
-            clip = VideoFileClip(file_path).subclip(0,7)
+            clip = VideoFileClip(file_path)
             dst = clip.fl_image(process_image)
             dst.write_videofile(os.path.join(output_folder, file), audio=False)
 
